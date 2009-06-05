@@ -465,6 +465,15 @@ class FogBugz
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
   end
   
+  # returns all intervals that start between dtStart and dtEnd
+  def intervals(dtStart=nil, dtEnd=nil)
+    cmd = {"cmd" => "listIntervals", "token" => @token}
+    cmd = {"dtStart" => dtStart}.merge(cmd) if dtStart
+    cmd = {"dtEnd" => dtEnd}.merge(cmd) if dtEnd
+    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+    return list_process(result, "interval", "ixInterval")
+  end
+  
   # list all of the checkins that have been associated with the specified case
   def checkins(ixBug)
     cmd = {"cmd"=>"listCheckins","token"=>@token,"ixBug"=>ixBug.to_s}
