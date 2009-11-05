@@ -52,7 +52,8 @@ class FogBugz
                  "21"=>"Project creation problem",
                  "22"=>"User creation problem"}
 
-  attr_reader :url, :token, :use_ssl, :api_version, :api_minversion, :api_url
+  attr_reader :host, :url, :token, :use_ssl, :api_version, :api_minversion, 
+              :api_url
 
   # Creates an instance of the FogBugz class.  
   # 
@@ -71,8 +72,8 @@ class FogBugz
   #
   # fb = FogBugz.new("my.fogbugz.com",true)
   #
-  def initialize(url,use_ssl=false,token=nil)
-    @url = url
+  def initialize(host, url,use_ssl=false,token=nil)
+    @url = host + url
     @use_ssl = use_ssl
     connect
 
@@ -103,6 +104,7 @@ class FogBugz
     if (result/"error").length >= 1
       # error code 1 = bad login
       # error code 2 = ambiguous name
+
       case (result/"error").first["code"]
         when "1"
           raise FogBugzError, (result/"error").inner_html
@@ -116,6 +118,8 @@ class FogBugz
     elsif (result/"token").length == 1
       # successful login
       @token = CDATA_REGEXP.match((result/"token").inner_html)[1]
+    else
+      raise FogBugzError, "No response: " + result 
     end
   end
 
@@ -128,6 +132,7 @@ class FogBugz
   def filters
     cmd = {"cmd" => "listFilters", "token" => @token}
     result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+
     return_value = Hash.new
     (result/"filter").each do |filter|
       # create hash for each new project
@@ -563,6 +568,8 @@ class FogBugz
   # Assumes port 443 for SSL connections and 80 for non-SSL connections.
   # Possibly should provide a way to override this.
   def connect
+    warn "in connect"
+  
     @connection = Net::HTTP.new(@url, @use_ssl ? 443 : 80) 
     @connection.use_ssl = @use_ssl
     @connection.verify_mode = OpenSSL::SSL::VERIFY_NONE if @use_ssl

@@ -1,11 +1,11 @@
 Gem::Specification.new do |s|
   s.name    = "fogbugz-api"
-  s.version = "0.0.4"
-  s.date = "2008-07-09"
+  s.version = "0.0.5"
+  s.date = "2009-11-04"
 
   s.summary = "Ruby wrapper for FogBugz API"
 
-  s.authors = ["Austin Moody","Gregory McIntyre"]
+  s.authors = ["Austin Moody","Gregory McIntyre", "Nathan L. Walls"]
   s.email = "austin.moody@gmail.com"
   s.homepage = "http://github.com/austinmoody/ruby-fogbugz-api/wikis"
 
