@@ -88,7 +88,7 @@ class FogBugz
       user = config[:basic_auth_user]
       pass = config[:basic_auth_pass]
 
-      basic_auth_str  = "Basic #{Base64.b64encode(user+":"+pass)}"
+      basic_auth_str  = "Basic #{Base64.encode64(user+":"+pass)}"
       @authentication = {"Authorization" => basic_auth_str}
     else
       @authentication = nil
