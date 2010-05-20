@@ -1,6 +1,7 @@
 # TODO - remove require of rubygems?
 require 'rubygems' rescue nil
 require 'hpricot'
+require 'base64'
 require 'net/https'
 require 'cgi'
 require 'date'
@@ -53,7 +54,7 @@ class FogBugz
                  "22"=>"User creation problem"}
 
   attr_reader :host, :url, :token, :use_ssl, :api_version, :api_minversion, 
-              :api_url
+              :api_url, :authentication
 
   # Creates an instance of the FogBugz class.  
   # 
@@ -72,18 +73,34 @@ class FogBugz
   #
   # fb = FogBugz.new("my.fogbugz.com",true)
   #
-  def initialize(host, url,use_ssl=false,token=nil)
-    @url = host + url
-    @use_ssl = use_ssl
-    connect
+  def initialize(host, config)
+    @url     = host
+    @use_ssl = config[:use_ssl]
+
+    connect(config)
+
+    base_url = config[:base_url] || ''
+
+    ## Besides FogBugz's own authentication, I might have basic HTTP auth
+    ## to negotiate
+    ## FIXME: Raise an exception if config doesn't have an auth user and pass.
+    if (config[:use_basic_auth] && config[:basic_auth_user] && config[:basic_auth_pass])
+      user = config[:basic_auth_user]
+      pass = config[:basic_auth_pass]
+
+      basic_auth_str  = "Basic #{Base64.b64encode(user+":"+pass)}"
+      @authentication = {"Authorization" => basic_auth_str}
+    else
+      @authentication = nil
+    end
 
     # Attempt to grap api.xml file from the server specified by url.  Will let
     # us know API is functional and verion matches this class
-    result = Hpricot.XML(@connection.get("/api.xml").body)
+    result          = Hpricot.XML(@connection.get(base_url + "/api.xml", @authentication).body)
 
-    @api_version = (result/"version").inner_html.to_i
+    @api_version    = (result/"version").inner_html.to_i
     @api_minversion = (result/"minversion").inner_html.to_i
-    @api_url = "/" + (result/"url").inner_html
+    @api_url        = base_url + '/' + (result/"url").inner_html
 
     # Make sure this class will work w/ API version
     raise FogBugzError, "API version mismatch" if (API_VERSION < @api_minversion)
@@ -99,7 +116,7 @@ class FogBugz
   def logon(email,password)
     cmd = {"cmd" => "logon", "email" => email, "password" => password}
 
-    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+    result = hpricot_post cmd
 
     if (result/"error").length >= 1
       # error code 1 = bad login
@@ -119,19 +136,19 @@ class FogBugz
       # successful login
       @token = CDATA_REGEXP.match((result/"token").inner_html)[1]
     else
-      raise FogBugzError, "No response: " + result 
+      raise FogBugzError, "Other response: " + result.to_s
     end
   end
 
   def logoff
     cmd = {"cmd" => "logoff", "token" => @token}
-    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+    result = hpricot_post cmd
     @token = ""
   end
 
   def filters
     cmd = {"cmd" => "listFilters", "token" => @token}
-    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+    hpricot_post cmd
 
     return_value = Hash.new
     (result/"filter").each do |filter|
@@ -149,7 +166,7 @@ class FogBugz
     cmd = {"cmd" => "listProjects", "token" => @token}
     cmd = {"fWrite"=>"1"}.merge(cmd) if fWrite
     cmd = {"ixProject"=>ixProject}.merge(cmd) if ixProject
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return list_process(result,"project","sProject")
   end
 
@@ -168,7 +185,7 @@ class FogBugz
       "ixGroup" => ixGroup.to_s,
       "fInbox" => fInbox.to_s
     }
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return (result/"ixProject").inner_html.to_i
   end
 
@@ -182,7 +199,7 @@ class FogBugz
     cmd = {"cmd" => "viewProject", "token" => @token}
     cmd = {"ixProject" => project.to_s}.merge(cmd) if project.class == Fixnum
     cmd = {"sProject" => project}.merge(cmd) if project.class == String
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value =  list_process(result,"project","sProject")
     return_value[return_value.keys[0]]
   end
@@ -193,7 +210,7 @@ class FogBugz
     cmd = {"fWrite"=>"1"}.merge(cmd) if fWrite
     cmd = {"ixProject"=>ixProject}.merge(cmd) if ixProject
     cmd = {"ixArea" => ixArea}.merge(cmd) if ixArea
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return list_process(result,"area","sArea")
   end
   
@@ -204,7 +221,7 @@ class FogBugz
   # * ixPersonPrimaryContact: ID of the person who will be the primary contact for this area.  -1 will set to the Project's primary contact, which is the default if not specified.
   def new_area(ixProject,sArea,ixPersonPrimaryContact=-1)
     cmd = {"cmd" => "newArea", "token" => @token, "ixProject" => ixProject.to_s, "sArea" => sArea.to_s, "ixPersonPrimaryContact" => ixPersonPrimaryContact.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return (result/"ixArea").inner_html.to_i    
   end
 
@@ -220,7 +237,7 @@ class FogBugz
     cmd = {"ixArea" => area.to_s}.merge(cmd) if area.class == Fixnum
     cmd = {"sArea" => area}.merge(cmd) if area.class == String
     cmd = {"ixProject" => ixProject.to_s}.merge(cmd) if ixProject
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"area","sArea")
     return_value[return_value.keys[0]]
   end
@@ -230,7 +247,7 @@ class FogBugz
     cmd = {"cmd" => "listFixFors", "token" => @token}
     {"ixProject"=>ixProject}.merge(cmd) if ixProject
     {"ixFixFor" => ixFixFor}.merge(cmd) if ixFixFor
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return list_process(result,"fixfor","sFixFor")
   end
 
@@ -246,7 +263,7 @@ class FogBugz
     cmd = {"ixFixFor" => fix_for.to_s}.merge(cmd) if fix_for.class == Fixnum
     cmd = {"sFixFor" => fix_for}.merge(cmd) if fix_for.class == String
     cmd = {"ixProject" => ixProject.to_s}.merge(cmd) if ixProject
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"fixfor","sFixFor")
     return_value[return_value.keys[0]]
   end
@@ -261,13 +278,13 @@ class FogBugz
     return nil if dtRelease and dtRelease.class != DateTime
     cmd = {"cmd" => "newFixFor","token"=>@token,"sFixFor"=>sFixFor,"fAssignable"=>(fAssignable) ? "1" : "0","ixProject"=>ixProject.to_s}
     cmd = {"dtRelease"=>dtRelease}.merge(cmd) if dtRelease
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return (result/"ixFixFor").inner_html.to_i        
   end
 
   def categories
     cmd = {"cmd" => "listCategories", "token" => @token}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return list_process(result,"category","sCategory")
   end
   
@@ -278,14 +295,14 @@ class FogBugz
   # Value returned is a Hash containing all properties of the located Category.  nil is returned for unsucessful search.
   def category(ixCategory)
     cmd = {"cmd" => "viewCategory", "token" => @token, "ixCategory" => ixCategory.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"category","sCategory")
     return_value[return_value.keys[0]]    
   end
 
   def priorities
     cmd = {"cmd" => "listPriorities", "token" => @token}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return list_process(result,"priority","sPriority")
   end
   
@@ -296,7 +313,7 @@ class FogBugz
   # Value returned is a Hash containing all properties of the located Priority.  nil is returned for unsuccessful search.
   def priority(ixPriority)
     cmd = {"cmd" => "viewPriority", "token" => @token, "ixPriority" => ixPriority.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"priority","sPriority")
     return_value[return_value.keys[0]]        
   end
@@ -315,7 +332,7 @@ class FogBugz
     }
     cmd = {"fIncludeCommunity" => "1"}.merge(cmd) if fIncludeCommunity
     cmd = {"fIncludeVirtual" => "1"}.merge(cmd) if fIncludeVirtual
-    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+    hpricot_post cmd
     return list_process(result,"person","sFullName")
   end
 
@@ -332,7 +349,7 @@ class FogBugz
     cmd = {"cmd" => "viewPerson", "token" => @token}
     cmd = {"ixPerson" => ixPerson.to_s}.merge(cmd) if ixPerson
     cmd = {"sEmail" => sEmail}.merge(cmd) if sEmail
-    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+    hpricot_post cmd
     return_value = list_process(result,"person","sFullName")
     return_value[return_value.keys[0]]
   end
@@ -345,7 +362,7 @@ class FogBugz
   # * fActive: Is the new Person active? true/false
   def new_person(sEmail,sFullname,nType,fActive=true)
     cmd = {"cmd" => "newPerson", "token" => @token, "sEmail" => sEmail.to_s, "sFullname" => sFullname.to_s, "nType" => nType.to_s, "fActive" => (fActive) ? "1" : "0"}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return (result/"ixPerson").inner_html.to_i        
   end
 
@@ -360,7 +377,7 @@ class FogBugz
     }
     cmd = {"ixCategory"=>ixCategory}.merge(cmd) if ixCategory
     cmd = {"fResolved"=>fResolved}.merge(cmd) if fResolved
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return list_process(result,"status","sStatus")
   end
 
@@ -371,7 +388,7 @@ class FogBugz
   # Value returned is a Hash containing all properties of the located Status.  nil is returned for unsuccessful search.  
   def status(ixStatus)
     cmd = {"cmd" => "viewStatus", "token" => @token, "ixStatus" => ixStatus.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"status","sStatus")
     return_value[return_value.keys[0]]            
   end
@@ -382,7 +399,7 @@ class FogBugz
       "cmd" => "listMailboxes",
       "token" => @token
     }
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     # usually lists were keyed w/ a name field.  Mailboxes just
     # weren't working for me so I'm going with ixMailbox value
     return list_process(result,"mailbox","ixMailbox")
@@ -395,7 +412,7 @@ class FogBugz
   # Value returned is a Hash containing all properties of the located Mailbox.  nil is returned for unsuccessful search.    
   def mailbox(ixMailbox)
     cmd = {"cmd" => "viewMailbox", "token" => @token, "ixMailbox" => ixMailbox.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"mailbox","ixMailbox")
     return_value[return_value.keys[0]]    
   end
@@ -418,7 +435,7 @@ class FogBugz
     # ixBug is the key for the hash returned so I'm adding it to the cols array just in case
     cmd = {"cols" => (cols + ["ixBug"])}.merge(cmd) if not cols.include?("ixBug")
     cmd = {"max" => max}.merge(cmd) if max
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"case","ixBug")
     # if one of the returned cols = events, then process 
     # this list and replace its spot in the Hash
@@ -445,7 +462,7 @@ class FogBugz
   def working_schedule(ixPerson=nil)
     cmd = {"cmd"=>"listWorkingSchedule","token"=>@token}
     cmd = {"ixPerson"=>ixPerson.to_s}.merge(cmd) if ixPerson
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     return_value = list_process(result,"workingSchedule","ixPerson")
     return_value = return_value[return_value.keys[0]] 
     Hpricot.XML(return_value["rgWorkDays"]).each_child do |e|
@@ -459,14 +476,14 @@ class FogBugz
   # * ixBug: ID of the case you want to start working on  
   def start_work(ixBug)
     cmd = {"cmd"=>"startWork","token"=>@token,"ixBug"=>ixBug.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
   end
   
   # stop working on everything (stop the stopwatch)
   def stop_work
     cmd = {"cmd"=>"stopWork","token"=>@token}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
   end
   
@@ -475,14 +492,14 @@ class FogBugz
     cmd = {"cmd" => "listIntervals", "token" => @token}
     cmd = {"dtStart" => dtStart}.merge(cmd) if dtStart
     cmd = {"dtEnd" => dtEnd}.merge(cmd) if dtEnd
-    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+    hpricot_post cmd
     return list_process(result, "interval", "ixInterval")
   end
   
   # list all of the checkins that have been associated with the specified case
   def checkins(ixBug)
     cmd = {"cmd"=>"listCheckins","token"=>@token,"ixBug"=>ixBug.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     list_process(result,"checkin","ixCVS")
   end
@@ -490,7 +507,7 @@ class FogBugz
   # list all wikis in FogBugz
   def wikis
     cmd = {"cmd"=>"listWikis","token"=>@token}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     list_process(result,"wiki","ixWiki")
   end
@@ -500,7 +517,7 @@ class FogBugz
   # ixWiki: ID of the wiki to list articles
   def articles(ixWiki)
     cmd = {"cmd"=>"listArticles","token"=>@token,"ixWiki"=>ixWiki.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     list_process(result,"article","ixWikiPage")
   end
@@ -509,7 +526,7 @@ class FogBugz
   # TODO - add ability to specify page revision
   def article(ixWikiPage)
     cmd = {"cmd"=>"viewArticle","token"=>@token,"ixWikiPage"=>ixWikiPage.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     return_value = list_process(result,"wikipage","sBody")
     return_value[return_value.keys[0]]
@@ -519,7 +536,7 @@ class FogBugz
   # ixWikiPage: ID of the wiki page to list revisions.
   def revisions(ixWikiPage)
     cmd = {"cmd"=>"listRevisions","token"=>@token,"ixWikiPage"=>ixWikiPage.to_s}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     list_process(result,"revision","nRevision")    
   end
@@ -527,7 +544,7 @@ class FogBugz
   # list wiki templates
   def templates
     cmd = {"cmd"=>"listTemplates","token"=>@token}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     list_process(result,"template","ixTemplate")        
   end
@@ -535,7 +552,7 @@ class FogBugz
   # lists all readable discussion groups
   def discussion_groups
     cmd = {"cmd"=>"listDiscussGroups","token"=>@token}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     list_process(result,"discussion","ixDiscussGroup")          
   end
@@ -543,7 +560,7 @@ class FogBugz
   # get back info on this person such as their timezone offset, preferred columns, etc..
   def settings
     cmd = {"cmd"=>"viewSettings","token"=>@token,"ixPerson"=>"4"}
-    result = Hpricot.XML(@connection.post(@api_url,to_params(cmd)).body)
+    result = hpricot_post cmd
     raise FogBugzError, "Code: #{(result/"error")[0]["code"]} - #{(result/"error").inner_html}" if (result/"error").inner_html != ""
     return_value = Hash.new
     (result/"settings")[0].each_child do |e|
@@ -567,21 +584,21 @@ class FogBugz
   #
   # Assumes port 443 for SSL connections and 80 for non-SSL connections.
   # Possibly should provide a way to override this.
-  def connect
-    warn "in connect"
-  
-    @connection = Net::HTTP.new(@url, @use_ssl ? 443 : 80) 
-    @connection.use_ssl = @use_ssl
+  def connect(config)
+    @use_ssl                = config[:use_ssl] || false
+    @connection             = Net::HTTP.new(@url, @use_ssl ? 443 : 80)
+    @connection.use_ssl     = @use_ssl
     @connection.verify_mode = OpenSSL::SSL::VERIFY_NONE if @use_ssl
   end
 
   def case_process(cmd,params,cols)
     cmd = {
-      "cmd" => cmd,
+      "cmd"   => cmd,
       "token" => @token,
-      "cols" => cols.join(",")
+      "cols"  => cols.join(",")
     }.merge(params)
-    result = Hpricot.XML(@connection.post(@api_url, to_params(cmd)).body)
+
+    hpricot_post cmd
     return_value = list_process(result,"case","ixBug")
     # if one of the returned cols = events, then process 
     # this list and replace its spot in the Hash
@@ -673,5 +690,19 @@ class FogBugz
   #   "cmd=logon&email=austin.moody@gmail.com&password=yeahwhatever"
   def to_params(hash)
     hash.map{|key, value| "#{key}=#{CGI.escape(value.to_s)}" }.join('&')
+  end
+
+  def hpricot_post(cmd)
+    params = to_params(cmd)
+    
+    body = String.new
+    
+    if @authentication
+      body = @connection.post(@api_url, params, @authentication).body
+    else
+      body = @connection.post(@api_url, params).body
+    end
+
+    Hpricot.XML(body)
   end
 end

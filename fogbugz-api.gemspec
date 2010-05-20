@@ -1,7 +1,7 @@
 Gem::Specification.new do |s|
   s.name    = "fogbugz-api"
-  s.version = "0.0.5"
-  s.date = "2009-11-04"
+  s.version = "0.0.6"
+  s.date = "2010-05-20"
 
   s.summary = "Ruby wrapper for FogBugz API"
 
